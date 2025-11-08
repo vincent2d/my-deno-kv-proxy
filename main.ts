@@ -1,42 +1,78 @@
-// main.ts - 最终诊断版本
+// main.js - 纯内存轮询版本 (临时解决方案)
 
-console.log("启动最终诊断脚本...");
+// 目标 API 地址
+const TARGET_API_HOST = "https://generativelanguage.googleapis.com";
 
-// 检查 Deno KV 的权限状态
-async function checkKvPermissions() {
-  try {
-    const status = await Deno.permissions.query({ name: "kv" });
-    console.log(`[诊断信息] Deno KV 权限状态: ${status.state}`);
-    return status.state;
-  } catch (e) {
-    console.error(`[诊断信息] 查询 Deno KV 权限时出错: ${e.message}`);
-    return "error";
-  }
+// --- 1. 从环境变量中安全地读取 API 密钥 (逻辑不变) ---
+const keysString = Deno.env.get("API_KEYS") || "";
+const API_KEYS = keysString.split(',').map(k => k.trim()).filter(k => k);
+
+// --- 2. 使用内存变量进行轮询 ---
+// 定义一个全局变量来跟踪当前密钥的索引。
+// 注意：这个变量在服务重启或重新部署后会重置为 0。
+let currentIndex = 0;
+
+console.log("服务启动成功！(使用纯内存轮询模式)");
+if (API_KEYS.length > 0) {
+  console.log(`已成功从环境变量加载 ${API_KEYS.length} 个 API 密钥。`);
+} else {
+  console.warn("警告：未在环境变量中找到 API_KEYS。服务将无法处理请求。");
 }
 
+// --- 3. 启动服务 ---
 Deno.serve(async (req) => {
-  console.log("接收到请求，开始诊断...");
+  const url = new URL(req.url);
 
-  // 1. 检查权限
-  await checkKvPermissions();
-
-  // 2. 检查 Deno.openKv 的类型
-  console.log(`[诊断信息] typeof Deno.openKv 的值是: "${typeof Deno.openKv}"`);
-
-  // 3. 尝试调用
-  if (typeof Deno.openKv === 'function') {
-    try {
-      console.log("尝试调用 Deno.openKv()...");
-      const kv = await Deno.openKv();
-      await kv.close();
-      console.log("Deno.openKv() 调用成功！");
-      return new Response("诊断成功: Deno.openKv 可用。");
-    } catch (e) {
-      console.error(`调用 Deno.openKv() 时发生错误: ${e.message}`);
-      return new Response(`诊断失败: 调用时出错 - ${e.message}`, { status: 500 });
-    }
-  } else {
-    console.error("最终确认: Deno.openKv 不是一个函数。");
-    return new Response("诊断失败: Deno.openKv 不是一个函数。", { status: 500 });
+  // 根路径返回提示信息 (逻辑不变)
+  if (url.pathname === '/') {
+    return new Response(
+      "“这是一个API URL, 你不能直接访问。请把这个地址填写在对应的API URL处~”",
+      { headers: { "Content-Type": "text/html; charset=utf-8" } }
+    );
   }
-});
+
+  // 检查密钥是否已配置 (逻辑不变)
+  if (API_KEYS.length === 0) {
+    console.error("请求失败：服务器未配置 API_KEYS 环境变量。");
+    return new Response(
+      "“服务器配置错误: API 密钥未配置。请联系管理员检查环境变量。”",
+      { status: 500, headers: { "Content-Type": "text/html; charset=utf-8" } }
+    );
+  }
+
+  // --- 4. 实现内存中的密钥轮询 ---
+  // 先获取当前要使用的密钥
+  const currentApiKey = API_KEYS[currentIndex];
+  console.log(`[In-Memory Rotation] Using API Key at index ${currentIndex}`);
+
+  // 然后立即更新索引，为下一次请求做准备
+  // 使用取模运算符 (%) 确保索引在数组范围内循环
+  currentIndex = (currentIndex + 1) % API_KEYS.length;
+
+  // --- 5. 路径重写和请求转发逻辑 (逻辑不变) ---
+  let pathname = url.pathname;
+  if (pathname.startsWith('/v1/')) {
+    pathname = pathname.replace('/v1/', '/v1beta/');
+    if (pathname.endsWith('/chat/completions')) {
+      pathname = pathname.replace('/chat/completions', ':generateContent');
+    }
+  }
+
+  const targetUrl = new URL(TARGET_API_HOST + pathname + url.search);
+  targetUrl.searchParams.set('key', currentApiKey);
+
+  const headers = new Headers(req.headers);
+  headers.set("host", targetUrl.host);
+  headers.delete("Authorization");
+
+  const newRequest = new Request(targetUrl.toString(), {
+    method: req.method,
+    headers: headers,
+    body: req.body,
+    duplex: 'half',
+  });
+
+  return await fetch(newRequest);
+});```
+
+部署这个版本后，你的 API 代理服务就可以立即恢复正常工作了。然后我们就可以安心等待 Deno 官方对平台 Bug 的修复。
