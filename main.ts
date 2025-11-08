@@ -73,6 +73,4 @@ Deno.serve(async (req) => {
   });
 
   return await fetch(newRequest);
-});```
-
-部署这个版本后，你的 API 代理服务就可以立即恢复正常工作了。然后我们就可以安心等待 Deno 官方对平台 Bug 的修复。
+});
